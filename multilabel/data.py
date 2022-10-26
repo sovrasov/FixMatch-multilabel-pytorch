@@ -1,5 +1,7 @@
 import os.path as osp
 import json
+from copy import deepcopy
+import random
 from PIL import Image
 from torchvision import transforms
 import torch
@@ -7,21 +9,16 @@ import cv2 as cv
 from dataset.randaugment import RandAugmentMC
 
 
-class TransformFixMatch(object):
-    def __init__(self, mean, std, resolution=32):
+class TransformFixMatchMultilabel(object):
+    def __init__(self, mean, std, resolution=224):
         self.weak = transforms.Compose([
             transforms.Resize((resolution, resolution)),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(size=resolution,
-                                  padding=int(resolution*0.125),
-                                  padding_mode='reflect')])
+            transforms.RandomHorizontalFlip()])
         self.strong = transforms.Compose([
             transforms.Resize((resolution, resolution)),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(size=resolution,
-                                  padding=int(resolution*0.125),
-                                  padding_mode='reflect'),
             RandAugmentMC(n=2, m=10)])
+
         self.normalize = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=mean, std=std)])
@@ -32,13 +29,44 @@ class TransformFixMatch(object):
         return self.normalize(weak), self.normalize(strong)
 
 
-
 normal_mean = [0.485, 0.456, 0.406]
 normal_std = [0.229, 0.224, 0.225]
 
 
-def split_multilabel_data(data):
-    pass
+def get_labels_freq(data, num_classes):
+    counters = {i : 0 for i in range(num_classes)}
+    freqs = deepcopy(counters)
+
+    for record in data:
+        _, labels = record
+        for l in labels:
+            counters[l] += 1
+
+    for i in range(num_classes):
+        freqs[i] = counters[i] / len(data)
+    return freqs, counters
+
+
+def split_multilabel_data(base_dataset, unsupervised_fraction=0.5):
+    data_records = base_dataset.data
+    random.seed(6)
+    sampled_records = random.sample([i for i in range(len(data_records))], int(len(data_records) * unsupervised_fraction))
+
+    supervised_subset = []
+    unsupervised_subset = []
+
+    for i in range(len(data_records)):
+        if i in sampled_records:
+            supervised_subset.append(data_records[i])
+        else:
+            unsupervised_subset.append(data_records[i])
+
+    sup_dataset = deepcopy(base_dataset)
+    sup_dataset.data = supervised_subset
+    unsup_dataset = deepcopy(base_dataset)
+    unsup_dataset.data = unsupervised_subset
+
+    return sup_dataset, unsup_dataset
 
 
 def get_voc07(args, root):
@@ -59,23 +87,12 @@ def get_voc07(args, root):
         transforms.Normalize(mean=normal_mean, std=normal_std)
     ])
     base_dataset = MultiLabelClassification(osp.join(root, 'mlc_voc/train.json'), transform=transform_labeled)
+    train_labeled_dataset, train_unlabeled_dataset = split_multilabel_data(base_dataset)
+    train_unlabeled_dataset.transform = TransformFixMatchMultilabel(mean=normal_mean, std=normal_std)
 
-    '''
-    train_labeled_idxs, train_unlabeled_idxs = x_u_split(
-        args, base_dataset.targets)
-
-    train_labeled_dataset = CIFAR10SSL(
-        root, train_labeled_idxs, train=True,
-        transform=transform_labeled)
-
-    train_unlabeled_dataset = CIFAR10SSL(
-        root, train_unlabeled_idxs, train=True,
-        transform=TransformFixMatch(mean=cifar10_mean, std=cifar10_std))
-
-    '''
     test_dataset = MultiLabelClassification(osp.join(root, 'mlc_voc/val.json'), transform=transform_val)
 
-    return base_dataset, [], test_dataset
+    return train_labeled_dataset, train_unlabeled_dataset, test_dataset
 
 
 class MultiLabelClassification:
@@ -124,7 +141,8 @@ class MultiLabelClassification:
             for img_info in images_info:
                 rel_image_path, img_labels = img_info
                 full_image_path = osp.join(data_dir, rel_image_path)
-                labels_idx = [class_to_idx[lbl] for lbl in img_labels if lbl in class_to_idx]
+                labels_idx = set([class_to_idx[lbl] for lbl in img_labels if lbl in class_to_idx])
+                labels_idx = list(labels_idx)
                 assert full_image_path
                 if not labels_idx:
                     img_wo_objects += 1

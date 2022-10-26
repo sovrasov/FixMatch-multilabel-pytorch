@@ -235,15 +235,16 @@ def main():
         num_workers=args.num_workers,
         drop_last=True)
 
-    unlabeled_trainloader = None
-    '''
-    unlabeled_trainloader = DataLoader(
-        unlabeled_dataset,
-        sampler=train_sampler(unlabeled_dataset),
-        batch_size=args.batch_size*args.mu,
-        num_workers=args.num_workers,
-        drop_last=True)
-    '''
+
+    if args.mu == 0:
+        unlabeled_trainloader = None
+    else:
+        unlabeled_trainloader = DataLoader(
+            unlabeled_dataset,
+            sampler=train_sampler(unlabeled_dataset),
+            batch_size=args.batch_size*args.mu,
+            num_workers=args.num_workers,
+            drop_last=True)
 
     test_loader = DataLoader(
         test_dataset,
@@ -335,10 +336,11 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
         labeled_epoch = 0
         unlabeled_epoch = 0
         labeled_trainloader.sampler.set_epoch(labeled_epoch)
-        unlabeled_trainloader.sampler.set_epoch(unlabeled_epoch)
+        if unlabeled_trainloader:
+            unlabeled_trainloader.sampler.set_epoch(unlabeled_epoch)
 
     labeled_iter = iter(labeled_trainloader)
-    #unlabeled_iter = iter(unlabeled_trainloader)
+    unlabeled_iter = iter(unlabeled_trainloader) if unlabeled_trainloader else None
 
     model.train()
     for epoch in range(args.start_epoch, args.epochs):
@@ -361,38 +363,44 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 labeled_iter = iter(labeled_trainloader)
                 inputs_x, targets_x = labeled_iter.next()
 
-            try:
-                pass
-                #(inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
-            except:
-                if args.world_size > 1:
-                    unlabeled_epoch += 1
-                    unlabeled_trainloader.sampler.set_epoch(unlabeled_epoch)
-                unlabeled_iter = iter(unlabeled_trainloader)
-                (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
+            if unlabeled_iter:
+                try:
+                    (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
+                except:
+                    if args.world_size > 1:
+                        unlabeled_epoch += 1
+                        unlabeled_trainloader.sampler.set_epoch(unlabeled_epoch)
+                    unlabeled_iter = iter(unlabeled_trainloader)
+                    (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
 
             data_time.update(time.time() - end)
             batch_size = inputs_x.shape[0]
-            inputs = inputs_x.to(args.device)#interleave(
-                #torch.cat((inputs_x, inputs_u_w, inputs_u_s)), 2*args.mu+1).to(args.device)
-            #print(targets_x.shape)
+            if unlabeled_iter:
+                inputs = interleave(
+                    torch.cat((inputs_x, inputs_u_w, inputs_u_s)), 2*args.mu+1).to(args.device)
+            else:
+                inputs = inputs_x.to(args.device)
+
             targets_x = targets_x.to(args.device)
-            #print(targets_x.shape)
+
             logits = model(inputs)
-            #logits = de_interleave(logits, 2*args.mu+1)
+            if unlabeled_iter:
+                logits = de_interleave(logits, 2*args.mu+1)
+                logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
+
             logits_x = logits[:batch_size]
-            #print(logits_x.shape)
-            #logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
             del logits
+
             if multilabel:
-                Lx = bce_loss(logits_x, targets_x)#, reduction='mean')
-                Lu = torch.Tensor([0.]).to(args.device)
-                mask = torch.Tensor([0.]).to(args.device)
-                #pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
-                #max_probs, targets_u = torch.max(pseudo_label, dim=-1)
-                #mask = max_probs.ge(args.threshold).float()
-                #Lu = (F.cross_entropy(logits_u_s, targets_u,
-                #                    reduction='none') * mask).mean()
+                Lx = bce_loss(logits_x, targets_x)
+                if unlabeled_iter:
+                    pseudo_label = torch.sigmoid(logits_u_w.detach() / args.T)
+                    mask = pseudo_label.ge(args.threshold).float()
+                    Lu = bce_loss(logits_u_s, mask)
+                else:
+                    Lu = torch.Tensor([0.]).to(args.device)
+                    mask = torch.Tensor([0.]).to(args.device)
+
             else:
                 Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
                 pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
