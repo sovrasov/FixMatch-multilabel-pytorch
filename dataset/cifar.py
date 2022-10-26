@@ -7,6 +7,7 @@ from torchvision import datasets
 from torchvision import transforms
 
 from .randaugment import RandAugmentMC
+from multilabel.data import get_voc07
 
 logger = logging.getLogger(__name__)
 
@@ -106,16 +107,18 @@ def x_u_split(args, labels):
 
 
 class TransformFixMatch(object):
-    def __init__(self, mean, std):
+    def __init__(self, mean, std, resolution=32):
         self.weak = transforms.Compose([
+            transforms.Resize((resolution, resolution)),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(size=32,
-                                  padding=int(32*0.125),
+            transforms.RandomCrop(size=resolution,
+                                  padding=int(resolution*0.125),
                                   padding_mode='reflect')])
         self.strong = transforms.Compose([
+            transforms.Resize((resolution, resolution)),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(size=32,
-                                  padding=int(32*0.125),
+            transforms.RandomCrop(size=resolution,
+                                  padding=int(resolution*0.125),
                                   padding_mode='reflect'),
             RandAugmentMC(n=2, m=10)])
         self.normalize = transforms.Compose([
@@ -179,4 +182,5 @@ class CIFAR100SSL(datasets.CIFAR100):
 
 
 DATASET_GETTERS = {'cifar10': get_cifar10,
-                   'cifar100': get_cifar100}
+                   'cifar100': get_cifar100,
+                   'mlc_voc': get_voc07}

@@ -18,6 +18,9 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from dataset.cifar import DATASET_GETTERS
+
+from multilabel.loss import AsymmetricLoss
+from multilabel.metrics import mAP, accuracy_multilabel
 from utils import AverageMeter, accuracy
 
 logger = logging.getLogger(__name__)
@@ -43,7 +46,7 @@ def set_seed(args):
 def get_cosine_schedule_with_warmup(optimizer,
                                     num_warmup_steps,
                                     num_training_steps,
-                                    num_cycles=7./16.,
+                                    num_cycles=1./2.,
                                     last_epoch=-1):
     def _lr_lambda(current_step):
         if current_step < num_warmup_steps:
@@ -72,14 +75,14 @@ def main():
     parser.add_argument('--num-workers', type=int, default=4,
                         help='number of workers')
     parser.add_argument('--dataset', default='cifar10', type=str,
-                        choices=['cifar10', 'cifar100'],
+                        choices=['cifar10', 'cifar100', 'mlc_voc'],
                         help='dataset name')
     parser.add_argument('--num-labeled', type=int, default=4000,
                         help='number of labeled data')
     parser.add_argument("--expand-labels", action="store_true",
                         help="expand labels to fit eval steps")
     parser.add_argument('--arch', default='wideresnet', type=str,
-                        choices=['wideresnet', 'resnext'],
+                        choices=['wideresnet', 'resnext', 'mobilenet'],
                         help='dataset name')
     parser.add_argument('--total-steps', default=2**20, type=int,
                         help='number of total steps to run')
@@ -97,7 +100,7 @@ def main():
                         help='weight decay')
     parser.add_argument('--nesterov', action='store_true', default=True,
                         help='use nesterov momentum')
-    parser.add_argument('--use-ema', action='store_true', default=True,
+    parser.add_argument('--use-ema', action='store_true', default=False,
                         help='use EMA model')
     parser.add_argument('--ema-decay', default=0.999, type=float,
                         help='EMA decay rate')
@@ -141,6 +144,10 @@ def main():
                                          depth=args.model_depth,
                                          width=args.model_width,
                                          num_classes=args.num_classes)
+        elif args.arch == 'mobilenet':
+            from multilabel.timm import TimmModelsWrapper
+            model = TimmModelsWrapper('mobilenetv3_large_100_miil', pretrained=True,
+                                         num_classes=args.num_classes)
         logger.info("Total params: {:.2f}M".format(
             sum(p.numel() for p in model.parameters())/1e6))
         return model
@@ -179,6 +186,7 @@ def main():
         os.makedirs(args.out, exist_ok=True)
         args.writer = SummaryWriter(args.out)
 
+    multilabel = False
     if args.dataset == 'cifar10':
         args.num_classes = 10
         if args.arch == 'wideresnet':
@@ -198,6 +206,16 @@ def main():
             args.model_cardinality = 8
             args.model_depth = 29
             args.model_width = 64
+    elif args.dataset == 'mlc_voc':
+        multilabel = True
+        args.num_classes = 20
+        if args.arch == 'wideresnet':
+            args.model_depth = 28
+            args.model_width = 2
+        elif args.arch == 'resnext':
+            args.model_cardinality = 4
+            args.model_depth = 28
+            args.model_width = 4
 
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()
@@ -217,12 +235,15 @@ def main():
         num_workers=args.num_workers,
         drop_last=True)
 
+    unlabeled_trainloader = None
+    '''
     unlabeled_trainloader = DataLoader(
         unlabeled_dataset,
         sampler=train_sampler(unlabeled_dataset),
         batch_size=args.batch_size*args.mu,
         num_workers=args.num_workers,
         drop_last=True)
+    '''
 
     test_loader = DataLoader(
         test_dataset,
@@ -255,8 +276,11 @@ def main():
         optimizer, args.warmup, args.total_steps)
 
     if args.use_ema:
+        print('Creating ema model...')
         from models.ema import ModelEMA
         ema_model = ModelEMA(args, model, args.ema_decay)
+    else:
+        ema_model = None
 
     args.start_epoch = 0
 
@@ -294,11 +318,13 @@ def main():
 
     model.zero_grad()
     train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
-          model, optimizer, ema_model, scheduler)
+          model, optimizer, ema_model, scheduler, multilabel)
 
 
 def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
-          model, optimizer, ema_model, scheduler):
+          model, optimizer, ema_model, scheduler, multilabel=False):
+    if multilabel:
+        bce_loss = AsymmetricLoss()
     if args.amp:
         from apex import amp
     global best_acc
@@ -312,7 +338,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
         unlabeled_trainloader.sampler.set_epoch(unlabeled_epoch)
 
     labeled_iter = iter(labeled_trainloader)
-    unlabeled_iter = iter(unlabeled_trainloader)
+    #unlabeled_iter = iter(unlabeled_trainloader)
 
     model.train()
     for epoch in range(args.start_epoch, args.epochs):
@@ -336,7 +362,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 inputs_x, targets_x = labeled_iter.next()
 
             try:
-                (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
+                pass
+                #(inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
             except:
                 if args.world_size > 1:
                     unlabeled_epoch += 1
@@ -346,23 +373,33 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
             data_time.update(time.time() - end)
             batch_size = inputs_x.shape[0]
-            inputs = interleave(
-                torch.cat((inputs_x, inputs_u_w, inputs_u_s)), 2*args.mu+1).to(args.device)
+            inputs = inputs_x.to(args.device)#interleave(
+                #torch.cat((inputs_x, inputs_u_w, inputs_u_s)), 2*args.mu+1).to(args.device)
+            #print(targets_x.shape)
             targets_x = targets_x.to(args.device)
+            #print(targets_x.shape)
             logits = model(inputs)
-            logits = de_interleave(logits, 2*args.mu+1)
+            #logits = de_interleave(logits, 2*args.mu+1)
             logits_x = logits[:batch_size]
-            logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
+            #print(logits_x.shape)
+            #logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
             del logits
-
-            Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
-
-            pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
-            max_probs, targets_u = torch.max(pseudo_label, dim=-1)
-            mask = max_probs.ge(args.threshold).float()
-
-            Lu = (F.cross_entropy(logits_u_s, targets_u,
-                                  reduction='none') * mask).mean()
+            if multilabel:
+                Lx = bce_loss(logits_x, targets_x)#, reduction='mean')
+                Lu = torch.Tensor([0.]).to(args.device)
+                mask = torch.Tensor([0.]).to(args.device)
+                #pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
+                #max_probs, targets_u = torch.max(pseudo_label, dim=-1)
+                #mask = max_probs.ge(args.threshold).float()
+                #Lu = (F.cross_entropy(logits_u_s, targets_u,
+                #                    reduction='none') * mask).mean()
+            else:
+                Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
+                pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
+                max_probs, targets_u = torch.max(pseudo_label, dim=-1)
+                mask = max_probs.ge(args.threshold).float()
+                Lu = (F.cross_entropy(logits_u_s, targets_u,
+                                    reduction='none') * mask).mean()
 
             loss = Lx + args.lambda_u * Lu
 
@@ -405,10 +442,10 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
         if args.use_ema:
             test_model = ema_model.ema
         else:
-            test_model = model
+            test_model = model.eval()
 
         if args.local_rank in [-1, 0]:
-            test_loss, test_acc = test(args, test_loader, test_model, epoch)
+            test_loss, test_acc = test(args, test_loader, test_model, epoch, multilabel)
 
             args.writer.add_scalar('train/1.train_loss', losses.avg, epoch)
             args.writer.add_scalar('train/2.train_loss_x', losses_x.avg, epoch)
@@ -438,18 +475,23 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             logger.info('Best top-1 acc: {:.2f}'.format(best_acc))
             logger.info('Mean top-1 acc: {:.2f}\n'.format(
                 np.mean(test_accs[-20:])))
+        model.train()
 
     if args.local_rank in [-1, 0]:
         args.writer.close()
 
 
-def test(args, test_loader, model, epoch):
+def test(args, test_loader, model, epoch, multilabel=False):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
     top1 = AverageMeter()
     top5 = AverageMeter()
     end = time.time()
+    if multilabel:
+        bce_loss = AsymmetricLoss()
+        out_scores = []
+        gt_labels = []
 
     if not args.no_progress:
         test_loader = tqdm(test_loader,
@@ -463,9 +505,15 @@ def test(args, test_loader, model, epoch):
             inputs = inputs.to(args.device)
             targets = targets.to(args.device)
             outputs = model(inputs)
-            loss = F.cross_entropy(outputs, targets)
+            if multilabel:
+                loss = bce_loss(outputs, targets)
+                out_scores.append(outputs)
+                gt_labels.append(targets)
+                prec1 = prec5 = accuracy_multilabel(outputs, targets)
+            else:
+                loss = F.cross_entropy(outputs, targets)
+                prec1, prec5 = accuracy(outputs, targets, topk=(1, 5))
 
-            prec1, prec5 = accuracy(outputs, targets, topk=(1, 5))
             losses.update(loss.item(), inputs.shape[0])
             top1.update(prec1.item(), inputs.shape[0])
             top5.update(prec5.item(), inputs.shape[0])
@@ -484,8 +532,17 @@ def test(args, test_loader, model, epoch):
         if not args.no_progress:
             test_loader.close()
 
-    logger.info("top-1 acc: {:.2f}".format(top1.avg))
-    logger.info("top-5 acc: {:.2f}".format(top5.avg))
+    if multilabel:
+        out_scores = torch.cat(out_scores, 0).data.cpu().numpy()
+        gt_labels = torch.cat(gt_labels, 0).data.cpu().numpy()
+        out_scores = 1. / (1. + np.exp(-1. * out_scores))
+        mAP_score, mean_p_c, mean_r_c, mean_f_c, p_o, r_o, f_o = mAP(gt_labels, out_scores, pos_thr=0.5)
+        mAP_score *= 100
+        logger.info("mlc map: {:.2f}".format(mAP_score))
+    else:
+        logger.info("top-1 acc: {:.2f}".format(top1.avg))
+        logger.info("top-5 acc: {:.2f}".format(top5.avg))
+
     return losses.avg, top1.avg
 
 
