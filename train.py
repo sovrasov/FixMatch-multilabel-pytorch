@@ -77,7 +77,7 @@ def main():
     parser.add_argument('--dataset', default='cifar10', type=str,
                         choices=['cifar10', 'cifar100', 'mlc_voc'],
                         help='dataset name')
-    parser.add_argument('--num-labeled', type=int, default=4000,
+    parser.add_argument('--frac-labeled', type=float, default=0.5,
                         help='number of labeled data')
     parser.add_argument("--expand-labels", action="store_true",
                         help="expand labels to fit eval steps")
@@ -310,7 +310,7 @@ def main():
             output_device=args.local_rank, find_unused_parameters=True)
 
     logger.info("***** Running training *****")
-    logger.info(f"  Task = {args.dataset}@{args.num_labeled}")
+    logger.info(f"  Task = {args.dataset}@{args.frac_labeled}")
     logger.info(f"  Num Epochs = {args.epochs}")
     logger.info(f"  Batch size per GPU = {args.batch_size}")
     logger.info(
@@ -395,8 +395,13 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 Lx = bce_loss(logits_x, targets_x)
                 if unlabeled_iter:
                     pseudo_label = torch.sigmoid(logits_u_w.detach() / args.T)
-                    mask = pseudo_label.ge(args.threshold).float()
-                    Lu = bce_loss(logits_u_s, mask)
+                    mask_pos = pseudo_label >= args.threshold
+                    mask_neg = pseudo_label <= abs(1. - args.threshold)
+                    pseudo_targets = -1. * torch.ones_like(mask_pos).to(pseudo_label.device)
+                    pseudo_targets[mask_pos] = 1
+                    pseudo_targets[mask_neg] = 0
+                    Lu = bce_loss(logits_u_s, pseudo_targets)
+                    mask = mask_pos.float()
                 else:
                     Lu = torch.Tensor([0.]).to(args.device)
                     mask = torch.Tensor([0.]).to(args.device)

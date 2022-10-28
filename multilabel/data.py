@@ -74,10 +74,7 @@ def get_voc07(args, root):
     transform_labeled = transforms.Compose([
         transforms.Resize((resolution, resolution)),
         transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.5, contrast=1, saturation=0.1, hue=0.5),
-        #transforms.RandomCrop(size=resolution,
-        #                      padding=int(resolution*0.125),
-        #                      padding_mode='reflect'),
+        # transforms.ColorJitter(brightness=0.5, contrast=1, saturation=0.1, hue=0.5),
         transforms.ToTensor(),
         transforms.Normalize(mean=normal_mean, std=normal_std)
     ])
@@ -87,7 +84,7 @@ def get_voc07(args, root):
         transforms.Normalize(mean=normal_mean, std=normal_std)
     ])
     base_dataset = MultiLabelClassification(osp.join(root, 'mlc_voc/train.json'), transform=transform_labeled)
-    train_labeled_dataset, train_unlabeled_dataset = split_multilabel_data(base_dataset)
+    train_labeled_dataset, train_unlabeled_dataset = split_multilabel_data(base_dataset, args.frac_labeled)
     train_unlabeled_dataset.transform = TransformFixMatchMultilabel(mean=normal_mean, std=normal_std)
 
     test_dataset = MultiLabelClassification(osp.join(root, 'mlc_voc/val.json'), transform=transform_val)
