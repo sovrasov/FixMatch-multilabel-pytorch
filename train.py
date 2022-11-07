@@ -21,6 +21,7 @@ from dataset.cifar import DATASET_GETTERS
 
 from multilabel.loss import AsymmetricLoss
 from multilabel.metrics import mAP, accuracy_multilabel
+from multilabel.unsup_loss_scheduler import CosineIncreaseScheduler
 from utils import AverageMeter, accuracy
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ def main():
                         help='use nesterov momentum')
     parser.add_argument('--use-ema', action='store_true', default=False,
                         help='use EMA model')
-    parser.add_argument('--ema-decay', default=0.999, type=float,
+    parser.add_argument('--ema-decay', default=0.996, type=float,
                         help='EMA decay rate')
     parser.add_argument('--mu', default=7, type=int,
                         help='coefficient of unlabeled batch size')
@@ -342,6 +343,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
     labeled_iter = iter(labeled_trainloader)
     unlabeled_iter = iter(unlabeled_trainloader) if unlabeled_trainloader else None
 
+    lambda_scheduler = CosineIncreaseScheduler(args.epochs, args.start_epoch)
+
     model.train()
     for epoch in range(args.start_epoch, args.epochs):
         batch_time = AverageMeter()
@@ -400,7 +403,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                     pseudo_targets = -1. * torch.ones_like(mask_pos).to(pseudo_label.device)
                     pseudo_targets[mask_pos] = 1
                     pseudo_targets[mask_neg] = 0
-                    Lu = bce_loss(logits_u_s, pseudo_targets)
+                    Lu = bce_loss(logits_u_s, pseudo_targets) / pseudo_targets.shape[0] # we need to normalize that loss
                     mask = mask_pos.float()
                 else:
                     Lu = torch.Tensor([0.]).to(args.device)
@@ -414,7 +417,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 Lu = (F.cross_entropy(logits_u_s, targets_u,
                                     reduction='none') * mask).mean()
 
-            loss = Lx + args.lambda_u * Lu
+            loss = Lx + lambda_scheduler.get_multiplier() * args.lambda_u * Lu
 
             if args.amp:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -448,6 +451,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                     loss_u=losses_u.avg,
                     mask=mask_probs.avg))
                 p_bar.update()
+
+        lambda_scheduler.make_step()
 
         if not args.no_progress:
             p_bar.close()
