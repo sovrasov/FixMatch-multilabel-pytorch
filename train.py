@@ -5,6 +5,7 @@ import os
 import random
 import shutil
 import time
+import sys
 from collections import OrderedDict
 
 import numpy as np
@@ -22,7 +23,7 @@ from dataset.cifar import DATASET_GETTERS
 from multilabel.loss import AsymmetricLoss
 from multilabel.metrics import mAP, accuracy_multilabel
 from multilabel.unsup_loss_scheduler import CosineIncreaseScheduler
-from utils import AverageMeter, accuracy
+from utils import AverageMeter, accuracy, Logger
 
 logger = logging.getLogger(__name__)
 best_acc = 0
@@ -130,6 +131,12 @@ def main():
                         help="don't use progress bar")
 
     args = parser.parse_args()
+
+    if args.local_rank == -1 or args.local_rank == 0:
+        log_name = 'train.log'
+        log_name += time.strftime('-%Y-%m-%d-%H-%M-%S')
+        sys.stdout = Logger(os.path.join(args.out, log_name))
+
     global best_acc
 
     def create_model(args):
