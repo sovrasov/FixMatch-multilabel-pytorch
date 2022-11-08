@@ -13,10 +13,12 @@ class TransformFixMatchMultilabel(object):
     def __init__(self, mean, std, resolution=224):
         self.weak = transforms.Compose([
             transforms.Resize((resolution, resolution)),
+            transforms.ColorJitter(brightness=0.5, contrast=1, saturation=0.1, hue=0.5),
             transforms.RandomHorizontalFlip()])
         self.strong = transforms.Compose([
             transforms.Resize((resolution, resolution)),
             transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.5, contrast=1, saturation=0.1, hue=0.5),
             RandAugmentMC(n=2, m=10)])
 
         self.normalize = transforms.Compose([
@@ -74,7 +76,7 @@ def get_voc07(args, root):
     transform_labeled = transforms.Compose([
         transforms.Resize((resolution, resolution)),
         transforms.RandomHorizontalFlip(),
-        # transforms.ColorJitter(brightness=0.5, contrast=1, saturation=0.1, hue=0.5),
+        transforms.ColorJitter(brightness=0.5, contrast=1, saturation=0.1, hue=0.5),
         transforms.ToTensor(),
         transforms.Normalize(mean=normal_mean, std=normal_std)
     ])

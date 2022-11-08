@@ -368,13 +368,13 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
             if unlabeled_iter:
                 try:
-                    (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
+                    (inputs_u_w, inputs_u_s), targets_u = unlabeled_iter.next()
                 except:
                     if args.world_size > 1:
                         unlabeled_epoch += 1
                         unlabeled_trainloader.sampler.set_epoch(unlabeled_epoch)
                     unlabeled_iter = iter(unlabeled_trainloader)
-                    (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
+                    (inputs_u_w, inputs_u_s), targets_u = unlabeled_iter.next()
 
             data_time.update(time.time() - end)
             batch_size = inputs_x.shape[0]
@@ -403,9 +403,11 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                     pseudo_targets = -1. * torch.ones_like(mask_pos).to(pseudo_label.device)
                     pseudo_targets[mask_pos] = 1
                     pseudo_targets[mask_neg] = 0
+                    pseudo_l_acc = torch.sum(targets_u.to(args.device).int() == pseudo_targets.int()).item() / pseudo_targets.shape[0] / pseudo_targets.shape[1]
                     Lu = bce_loss(logits_u_s, pseudo_targets) / pseudo_targets.shape[0] # we need to normalize that loss
                     mask = mask_pos.float()
                 else:
+                    pseudo_l_acc = 0.
                     Lu = torch.Tensor([0.]).to(args.device)
                     mask = torch.Tensor([0.]).to(args.device)
 
@@ -416,6 +418,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 mask = max_probs.ge(args.threshold).float()
                 Lu = (F.cross_entropy(logits_u_s, targets_u,
                                     reduction='none') * mask).mean()
+                pseudo_l_acc = 0.
 
             loss = Lx + lambda_scheduler.get_multiplier() * args.lambda_u * Lu
 
@@ -438,10 +441,12 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             end = time.time()
             mask_probs.update(mask.mean().item())
             if not args.no_progress:
-                p_bar.set_description("Train Epoch: {epoch}/{epochs:4}. Iter: {batch:4}/{iter:4}. LR: {lr:.4f}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. Loss_x: {loss_x:.4f}. Loss_u: {loss_u:.4f}. Mask: {mask:.2f}. ".format(
+                p_bar.set_description("Train Epoch: {epoch}/{epochs:4}. Iter: {batch:4}/{iter:4}. LR: {lr:.4f}. "
+                "Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. Loss_x: {loss_x:.4f}. Loss_u: {loss_u:.4f}. Pseudol acc: {pseudo_acc:.2f}. Mask: {mask:.2f}. ".format(
                     epoch=epoch + 1,
                     epochs=args.epochs,
                     batch=batch_idx + 1,
+                    pseudo_acc=pseudo_l_acc,
                     iter=args.eval_step,
                     lr=scheduler.get_last_lr()[0],
                     data=data_time.avg,
