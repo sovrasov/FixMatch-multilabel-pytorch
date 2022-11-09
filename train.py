@@ -309,11 +309,6 @@ def main():
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
 
-    if args.amp:
-        from apex import amp
-        model, optimizer = amp.initialize(
-            model, optimizer, opt_level=args.opt_level)
-
     if args.local_rank != -1:
         model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[args.local_rank],
@@ -337,7 +332,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
     if multilabel:
         bce_loss = AsymmetricLoss()
     if args.amp:
-        from apex import amp
+        scaler = torch.cuda.amp.GradScaler()
     global best_acc
     test_accs = []
     end = time.time()
@@ -395,56 +390,60 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
             targets_x = targets_x.to(args.device)
 
-            logits = model(inputs)
-            if unlabeled_iter:
-                logits = de_interleave(logits, 2*args.mu+1)
-                logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
-
-            logits_x = logits[:batch_size]
-            del logits
-
-            if multilabel:
-                Lx = bce_loss(logits_x, targets_x)
+            with torch.cuda.amp.autocast_mode.autocast(enabled=args.amp):
+                logits = model(inputs)
                 if unlabeled_iter:
-                    pseudo_label = torch.sigmoid(logits_u_w.detach() / args.T)
-                    mask_pos = pseudo_label >= args.threshold
-                    mask_neg = pseudo_label <= abs(1. - args.threshold)
-                    pseudo_targets = -1. * torch.ones_like(mask_pos).to(pseudo_label.device)
-                    pseudo_targets[mask_pos] = 1
-                    pseudo_targets[mask_neg] = 0
-                    pseudo_l_acc = torch.sum(targets_u.to(args.device).int() == pseudo_targets.int()).item() / pseudo_targets.shape[0] / pseudo_targets.shape[1]
-                    Lu = bce_loss(logits_u_s, pseudo_targets) / pseudo_targets.shape[0] # we need to normalize that loss
-                    mask = mask_pos.float()
+                    logits = de_interleave(logits, 2*args.mu+1)
+                    logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
+
+                logits_x = logits[:batch_size]
+                del logits
+
+                if multilabel:
+                    Lx = bce_loss(logits_x, targets_x)
+                    if unlabeled_iter:
+                        pseudo_label = torch.sigmoid(logits_u_w.detach() / args.T)
+                        mask_pos = pseudo_label >= args.threshold
+                        mask_neg = pseudo_label <= abs(1. - args.threshold)
+                        pseudo_targets = -1. * torch.ones_like(mask_pos).to(pseudo_label.device)
+                        pseudo_targets[mask_pos] = 1
+                        pseudo_targets[mask_neg] = 0
+                        pseudo_l_acc = torch.sum(targets_u.to(args.device).int() == pseudo_targets.int()).item() / pseudo_targets.shape[0] / pseudo_targets.shape[1]
+                        Lu = bce_loss(logits_u_s, pseudo_targets) / args.mu # we need to normalize that loss
+                        mask = mask_pos.float()
+                    else:
+                        pseudo_l_acc = 0.
+                        Lu = torch.Tensor([0.]).to(args.device)
+                        mask = torch.Tensor([0.]).to(args.device)
+
                 else:
+                    Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
+                    pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
+                    max_probs, targets_u = torch.max(pseudo_label, dim=-1)
+                    mask = max_probs.ge(args.threshold).float()
+                    Lu = (F.cross_entropy(logits_u_s, targets_u,
+                                        reduction='none') * mask).mean()
                     pseudo_l_acc = 0.
-                    Lu = torch.Tensor([0.]).to(args.device)
-                    mask = torch.Tensor([0.]).to(args.device)
 
-            else:
-                Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
-                pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
-                max_probs, targets_u = torch.max(pseudo_label, dim=-1)
-                mask = max_probs.ge(args.threshold).float()
-                Lu = (F.cross_entropy(logits_u_s, targets_u,
-                                    reduction='none') * mask).mean()
-                pseudo_l_acc = 0.
+                loss = Lx + lambda_scheduler.get_multiplier() * args.lambda_u * Lu
 
-            loss = Lx + lambda_scheduler.get_multiplier() * args.lambda_u * Lu
+                if args.amp:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
 
-            if args.amp:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
-
-            losses.update(loss.item())
-            losses_x.update(Lx.item())
-            losses_u.update(Lu.item())
-            optimizer.step()
-            scheduler.step()
-            if args.use_ema:
-                ema_model.update(model)
-            model.zero_grad()
+                losses.update(loss.item())
+                losses_x.update(Lx.item())
+                losses_u.update(Lu.item())
+                if args.amp:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                scheduler.step()
+                if args.use_ema:
+                    ema_model.update(model)
+                model.zero_grad()
 
             batch_time.update(time.time() - end)
             end = time.time()
