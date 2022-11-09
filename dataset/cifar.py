@@ -1,5 +1,6 @@
 import logging
 import math
+from functools import partial
 
 import numpy as np
 from PIL import Image
@@ -7,7 +8,7 @@ from torchvision import datasets
 from torchvision import transforms
 
 from .randaugment import RandAugmentMC
-from multilabel.data import get_voc07
+from multilabel.data import get_multilabel_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,8 @@ def get_cifar100(args, root):
 
 
 def x_u_split(args, labels):
-    label_per_class = args.num_labeled // args.num_classes
+    num_labeled = int(len(labels) * args.frac_labeled)
+    label_per_class = num_labeled // args.num_classes
     labels = np.array(labels)
     labeled_idx = []
     # unlabeled data: all data (https://github.com/kekmodel/FixMatch-pytorch/issues/10)
@@ -96,11 +98,11 @@ def x_u_split(args, labels):
         idx = np.random.choice(idx, label_per_class, False)
         labeled_idx.extend(idx)
     labeled_idx = np.array(labeled_idx)
-    assert len(labeled_idx) == args.num_labeled
+    assert len(labeled_idx) == num_labeled
 
-    if args.expand_labels or args.num_labeled < args.batch_size:
+    if args.expand_labels or num_labeled < args.batch_size:
         num_expand_x = math.ceil(
-            args.batch_size * args.eval_step / args.num_labeled)
+            args.batch_size * args.eval_step / num_labeled)
         labeled_idx = np.hstack([labeled_idx for _ in range(num_expand_x)])
     np.random.shuffle(labeled_idx)
     return labeled_idx, unlabeled_idx
@@ -183,4 +185,6 @@ class CIFAR100SSL(datasets.CIFAR100):
 
 DATASET_GETTERS = {'cifar10': get_cifar10,
                    'cifar100': get_cifar100,
-                   'mlc_voc': get_voc07}
+                   'mlc_voc': partial(get_multilabel_dataset, name='mlc_voc'),
+                   'ms_coco': partial(get_multilabel_dataset, name='ms_coco'),
+                   }

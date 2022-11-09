@@ -71,7 +71,7 @@ def split_multilabel_data(base_dataset, unsupervised_fraction=0.5):
     return sup_dataset, unsup_dataset
 
 
-def get_voc07(args, root):
+def get_multilabel_dataset(args, root, name='mlc_voc'):
     resolution = 224
     transform_labeled = transforms.Compose([
         transforms.Resize((resolution, resolution)),
@@ -85,11 +85,12 @@ def get_voc07(args, root):
         transforms.ToTensor(),
         transforms.Normalize(mean=normal_mean, std=normal_std)
     ])
-    base_dataset = MultiLabelClassification(osp.join(root, 'mlc_voc/train.json'), transform=transform_labeled)
+    base_dataset = MultiLabelClassification(osp.join(root, f'{name}/train.json'), transform=transform_labeled)
+    print(f'Num train images: {len(base_dataset.data)}')
     train_labeled_dataset, train_unlabeled_dataset = split_multilabel_data(base_dataset, args.frac_labeled)
     train_unlabeled_dataset.transform = TransformFixMatchMultilabel(mean=normal_mean, std=normal_std)
 
-    test_dataset = MultiLabelClassification(osp.join(root, 'mlc_voc/val.json'), transform=transform_val)
+    test_dataset = MultiLabelClassification(osp.join(root, f'{name}/val.json'), transform=transform_val)
 
     return train_labeled_dataset, train_unlabeled_dataset, test_dataset
 
