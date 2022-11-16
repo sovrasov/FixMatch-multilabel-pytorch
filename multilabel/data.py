@@ -49,6 +49,56 @@ def get_labels_freq(data, num_classes):
     return freqs, counters
 
 
+def split_small_subset(base_dataset, min_num_images=10):
+    min_num_images = int(min_num_images)
+
+    def get_class_records(all_records, class_idx):
+        class_records_idx = []
+        for i, rec in enumerate(all_records):
+            if class_idx in rec[1]:
+                class_records_idx.append(i)
+
+        random.shuffle(class_records_idx)
+        return class_records_idx
+
+    def get_num_class_samples(records, class_idx):
+        num_samples = 0
+        for rec in records:
+            if class_idx in rec[1]:
+                num_samples += 1
+        return num_samples
+
+    data_records = base_dataset.data
+    random.seed(6)
+    sampled_records = []
+
+    for i in range(base_dataset.num_classes):
+        class_records_idxs = get_class_records(data_records, i)
+        if i > 0:
+            num_sampled = get_num_class_samples(sampled_records, i)
+            req_samples = min_num_images - num_sampled
+
+            for idx in class_records_idxs:
+                if req_samples <= 0:
+                    break
+                if data_records[idx] not in sampled_records:
+                    sampled_records.append(data_records[idx])
+                    req_samples -= 1
+        else:
+            for j in range(min([len(class_records_idxs), min_num_images])):
+                sampled_records.append(data_records[class_records_idxs[j]])
+
+    class_counters = {i : get_num_class_samples(sampled_records, i) for i in range(base_dataset.num_classes)}
+    print(class_counters)
+    sup_dataset = deepcopy(base_dataset)
+    sup_dataset.data = sampled_records
+    unsup_dataset = deepcopy(base_dataset)
+    unsup_dataset.data = list(set(data_records) - set(sampled_records))
+    print(len(unsup_dataset), len(sup_dataset), len(base_dataset))
+
+    return sup_dataset, unsup_dataset
+
+
 def split_multilabel_data(base_dataset, unsupervised_fraction=0.5):
     data_records = base_dataset.data
     random.seed(6)
@@ -87,7 +137,7 @@ def get_multilabel_dataset(args, root, name='mlc_voc'):
     ])
     base_dataset = MultiLabelClassification(osp.join(root, f'{name}/train.json'), transform=transform_labeled)
     print(f'Num train images: {len(base_dataset.data)}')
-    train_labeled_dataset, train_unlabeled_dataset = split_multilabel_data(base_dataset, args.frac_labeled)
+    train_labeled_dataset, train_unlabeled_dataset = split_small_subset(base_dataset, args.frac_labeled)
     train_unlabeled_dataset.transform = TransformFixMatchMultilabel(mean=normal_mean, std=normal_std)
 
     test_dataset = MultiLabelClassification(osp.join(root, f'{name}/val.json'), transform=transform_val)
