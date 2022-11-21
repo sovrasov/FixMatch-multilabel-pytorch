@@ -22,6 +22,7 @@ from multilabel.loss import AsymmetricLoss
 from multilabel.metrics import mAP, accuracy_multilabel
 from multilabel.unsup_loss_scheduler import CosineIncreaseScheduler
 from utils import AverageMeter, accuracy, Logger
+from utils.loss_balancer import LossBalancer
 
 best_acc = 0
 
@@ -101,6 +102,8 @@ def main():
                         help='use nesterov momentum')
     parser.add_argument('--use-ema', action='store_true', default=False,
                         help='use EMA model')
+    parser.add_argument('--loss-balancing', action='store_true', default=False,
+                        help='auto balance supervised and semi-sup losses')
     parser.add_argument('--ema-decay', default=0.996, type=float,
                         help='EMA decay rate')
     parser.add_argument('--mu', default=7, type=int,
@@ -329,6 +332,11 @@ def main():
 
 def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
           model, optimizer, ema_model, scheduler, multilabel=False):
+    if args.loss_balancing:
+        loss_balancer = LossBalancer(2)
+    else:
+        loss_balancer = None
+
     if multilabel:
         bce_loss = AsymmetricLoss()
     if args.amp:
@@ -425,7 +433,10 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                                         reduction='none') * mask).mean()
                     pseudo_l_acc = 0.
 
-                loss = Lx + lambda_scheduler.get_multiplier() * args.lambda_u * Lu
+                if not args.loss_balancing:
+                    loss = Lx + lambda_scheduler.get_multiplier() * args.lambda_u * Lu
+                else:
+                    loss = loss_balancer.balance_losses([Lx, Lu])
 
                 if args.amp:
                     scaler.scale(loss).backward()
@@ -444,6 +455,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 if args.use_ema:
                     ema_model.update(model)
                 model.zero_grad()
+                if args.loss_balancing:
+                    loss_balancer.init_iteration()
 
             batch_time.update(time.time() - end)
             end = time.time()
