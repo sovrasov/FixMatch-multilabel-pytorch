@@ -31,6 +31,24 @@ class TransformFixMatchMultilabel(object):
         return self.normalize(weak), self.normalize(strong)
 
 
+class TransformBarlowTrwinsTwoCrop:
+    def __init__(self, mean, std, resolution=224):
+        self.strong = transforms.Compose([
+            transforms.Resize((resolution, resolution)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.5, contrast=1, saturation=0.1, hue=0.5),
+            RandAugmentMC(n=2, m=10)])
+
+        self.normalize = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std)])
+
+    def __call__(self, x):
+        data1 = self.strong(deepcopy(x))
+        data2 = self.strong(x)
+        return self.normalize(data1), self.normalize(data2)
+
+
 normal_mean = [0.485, 0.456, 0.406]
 normal_std = [0.229, 0.224, 0.225]
 
@@ -137,7 +155,10 @@ def get_multilabel_dataset(args, root, name='mlc_voc', resolution=224):
     base_dataset = MultiLabelClassification(osp.join(root, f'{name}/train.json'), transform=transform_labeled)
     print(f'Num train images: {len(base_dataset.data)}')
     train_labeled_dataset, train_unlabeled_dataset = split_small_subset(base_dataset, args.frac_labeled)
-    train_unlabeled_dataset.transform = TransformFixMatchMultilabel(mean=normal_mean, std=normal_std, resolution=resolution)
+    if args.use_bt:
+        train_unlabeled_dataset.transform = TransformBarlowTrwinsTwoCrop(mean=normal_mean, std=normal_std, resolution=resolution)
+    else:
+        train_unlabeled_dataset.transform = TransformFixMatchMultilabel(mean=normal_mean, std=normal_std, resolution=resolution)
 
     test_dataset = MultiLabelClassification(osp.join(root, f'{name}/val.json'), transform=transform_val)
 

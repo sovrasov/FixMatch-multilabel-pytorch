@@ -3,10 +3,6 @@ import torch.nn as nn
 
 
 def bt_loss(x, y, penalty=1.0 / 128.0):
-
-    # "`aux_feats` needs to be [bsz, n_views, ...]," "at least 3 dimensions are required")
-    #    aux_feats = aux_feats.view(aux_feats.shape[0], aux_feats.shape[1], -1)
-
     batch_size = x.shape[0]
     dimensionality = x.shape[1]
 

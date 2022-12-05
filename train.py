@@ -405,7 +405,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             targets_x = targets_x.to(args.device)
 
             with torch.cuda.amp.autocast_mode.autocast(enabled=args.amp):
-                logits = model(inputs)
+                output = model(inputs)
+                logits = output[0]
                 if unlabeled_iter:
                     logits = de_interleave(logits, 2*args.mu+1)
                     logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
@@ -417,8 +418,11 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                     Lx = bce_loss(logits_x, targets_x)
                     if unlabeled_iter:
                         if args.use_bt:
-                            Lu = bt_loss(logits_u_w, logits_u_s)
+                            extra_features = de_interleave(output[1], 2*args.mu+1)
+                            vecs1, vecs2 = extra_features[batch_size:].chunk(2)
+                            Lu = bt_loss(vecs1, vecs2)
                             mask = torch.Tensor([0.]).to(args.device)
+                            pseudo_l_acc = 0.
                         else:
                             pseudo_label = torch.sigmoid(logits_u_w.detach() / args.T)
                             mask_pos = pseudo_label >= args.threshold

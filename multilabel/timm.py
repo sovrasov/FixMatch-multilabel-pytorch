@@ -40,6 +40,7 @@ class TimmModelsWrapper(ModelInterface):
                  pretrained=False,
                  dropout_cls = 0.1,
                  pooling_type='avg',
+                 extra_head_dim=-1,
                  **kwargs):
         super().__init__(**kwargs)
         self.pretrained = pretrained
@@ -53,12 +54,21 @@ class TimmModelsWrapper(ModelInterface):
         self.dropout = Dropout(dropout_cls)
         self.pooling_type = pooling_type
         self.model.classifier = self.model.get_classifier()
+        if extra_head_dim > 0:
+            self.extra_head = nn.Linear(self.num_features, out_features=extra_head_dim)
+        else:
+            self.extra_head = None
 
     def forward(self, x):
         y = self.extract_features(x)
         glob_features = self._glob_feature_vector(y, self.pooling_type, reduce_dims=False)
         logits = self.infer_head(glob_features)
-        return logits
+        if not self.training:
+            return logits
+        if self.extra_head is not None:
+            extra_features = self.extra_head(glob_features.view(glob_features.shape[0], -1))
+            return logits, extra_features
+        return (logits,)
 
     def extract_features(self, x):
         return self.model.forward_features(x)
