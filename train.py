@@ -23,6 +23,7 @@ from multilabel.metrics import mAP, accuracy_multilabel
 from multilabel.unsup_loss_scheduler import CosineIncreaseScheduler
 from utils import AverageMeter, accuracy, Logger
 from utils.loss_balancer import LossBalancer
+from utils.bt_loss import bt_loss
 
 best_acc = 0
 
@@ -102,6 +103,8 @@ def main():
                         help='use nesterov momentum')
     parser.add_argument('--use-ema', action='store_true', default=False,
                         help='use EMA model')
+    parser.add_argument('--use-bt', action='store_true', default=False,
+                        help='use BarlowTwins loss')
     parser.add_argument('--loss-balancing', action='store_true', default=False,
                         help='auto balance supervised and semi-sup losses')
     parser.add_argument('--ema-decay', default=0.996, type=float,
@@ -153,9 +156,12 @@ def main():
                                          width=args.model_width,
                                          num_classes=args.num_classes)
         elif args.arch == 'mobilenet':
+            extra_dim = -1
+            if args.use_bt:
+                extra_dim = 1024
             from multilabel.timm import TimmModelsWrapper
             model = TimmModelsWrapper('mobilenetv3_large_100_miil', pretrained=True,
-                                         num_classes=args.num_classes)
+                                         num_classes=args.num_classes, extra_head_dim=extra_dim)
         print("Total params: {:.2f}M".format(
             sum(p.numel() for p in model.parameters())/1e6))
         return model
@@ -410,15 +416,19 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 if multilabel:
                     Lx = bce_loss(logits_x, targets_x)
                     if unlabeled_iter:
-                        pseudo_label = torch.sigmoid(logits_u_w.detach() / args.T)
-                        mask_pos = pseudo_label >= args.threshold
-                        mask_neg = pseudo_label <= abs(1. - args.threshold)
-                        pseudo_targets = -1. * torch.ones_like(mask_pos).to(pseudo_label.device)
-                        pseudo_targets[mask_pos] = 1
-                        pseudo_targets[mask_neg] = 0
-                        pseudo_l_acc = torch.sum(targets_u.to(args.device).int() == pseudo_targets.int()).item() / pseudo_targets.shape[0] / pseudo_targets.shape[1]
-                        Lu = bce_loss(logits_u_s, pseudo_targets) / args.mu # we need to normalize that loss
-                        mask = mask_pos.float()
+                        if args.use_bt:
+                            Lu = bt_loss(logits_u_w, logits_u_s)
+                            mask = torch.Tensor([0.]).to(args.device)
+                        else:
+                            pseudo_label = torch.sigmoid(logits_u_w.detach() / args.T)
+                            mask_pos = pseudo_label >= args.threshold
+                            mask_neg = pseudo_label <= abs(1. - args.threshold)
+                            pseudo_targets = -1. * torch.ones_like(mask_pos).to(pseudo_label.device)
+                            pseudo_targets[mask_pos] = 1
+                            pseudo_targets[mask_neg] = 0
+                            pseudo_l_acc = torch.sum(targets_u.to(args.device).int() == pseudo_targets.int()).item() / pseudo_targets.shape[0] / pseudo_targets.shape[1]
+                            Lu = bce_loss(logits_u_s, pseudo_targets) / args.mu # we need to normalize that loss
+                            mask = mask_pos.float()
                     else:
                         pseudo_l_acc = 0.
                         Lu = torch.Tensor([0.]).to(args.device)
