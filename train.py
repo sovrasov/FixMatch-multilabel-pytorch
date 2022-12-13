@@ -103,8 +103,11 @@ def main():
                         help='use nesterov momentum')
     parser.add_argument('--use-ema', action='store_true', default=False,
                         help='use EMA model')
+    # BT params
     parser.add_argument('--use-bt', action='store_true', default=False,
                         help='use BarlowTwins loss')
+    parser.add_argument('--bt-mode', default='unl', type=str,
+                        choices=['all', 'unl'], help='BT opration mode')
     parser.add_argument('--loss-balancing', action='store_true', default=False,
                         help='auto balance supervised and semi-sup losses')
     parser.add_argument('--ema-decay', default=0.996, type=float,
@@ -395,10 +398,16 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                     (inputs_u_w, inputs_u_s), targets_u = unlabeled_iter.next()
 
             data_time.update(time.time() - end)
-            batch_size = inputs_x.shape[0]
+            batch_size = targets_x.shape[0]
             if unlabeled_iter:
+                batch_mult = 2*args.mu + 1
+                if args.bt_mode == 'all':
+                    batch_mult += 1
+                    to_concat = (*inputs_x, inputs_u_w, inputs_u_s)
+                else:
+                    to_concat = (inputs_x, inputs_u_w, inputs_u_s)
                 inputs = interleave(
-                    torch.cat((inputs_x, inputs_u_w, inputs_u_s)), 2*args.mu+1).to(args.device)
+                    torch.cat(to_concat), batch_mult).to(args.device)
             else:
                 inputs = inputs_x.to(args.device)
 
@@ -408,7 +417,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 output = model(inputs)
                 logits = output[0]
                 if unlabeled_iter:
-                    logits = de_interleave(logits, 2*args.mu+1)
+                    logits = de_interleave(logits, batch_mult)
                     logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
 
                 logits_x = logits[:batch_size]
@@ -418,9 +427,14 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                     Lx = bce_loss(logits_x, targets_x)
                     if unlabeled_iter:
                         if args.use_bt:
-                            extra_features = de_interleave(output[1], 2*args.mu+1)
-                            vecs1, vecs2 = extra_features[batch_size:].chunk(2)
-                            Lu = bt_loss(vecs1, vecs2)
+                            extra_features = de_interleave(output[1], batch_mult)
+                            if args.bt_mode == 'all':
+                                vecs1, vecs2 = extra_features[2 * batch_size:].chunk(2)
+                                svecs1, svecs2 = extra_features[ : 2 * batch_size].chunk(2)
+                                Lu = bt_loss(torch.cat([vecs1, svecs1], dim=0), torch.cat([vecs2, svecs2], dim=0))
+                            else:
+                                vecs1, vecs2 = extra_features[batch_size:].chunk(2)
+                                Lu = bt_loss(vecs1, vecs2)
                             mask = torch.Tensor([0.]).to(args.device)
                             pseudo_l_acc = 0.
                         else:

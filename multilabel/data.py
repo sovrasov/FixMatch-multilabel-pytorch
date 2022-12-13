@@ -160,6 +160,9 @@ def get_multilabel_dataset(args, root, name='mlc_voc', resolution=224):
     else:
         train_unlabeled_dataset.transform = TransformFixMatchMultilabel(mean=normal_mean, std=normal_std, resolution=resolution)
 
+    if args.use_bt and args.bt_mode == 'all':
+        train_labeled_dataset.transform = TransformBarlowTrwinsTwoCrop(mean=normal_mean, std=normal_std, resolution=resolution)
+
     test_dataset = MultiLabelClassification(osp.join(root, f'{name}/val.json'), transform=transform_val)
 
     return train_labeled_dataset, train_unlabeled_dataset, test_dataset
