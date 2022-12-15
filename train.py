@@ -24,6 +24,7 @@ from multilabel.unsup_loss_scheduler import CosineIncreaseScheduler
 from utils import AverageMeter, accuracy, Logger
 from utils.loss_balancer import LossBalancer
 from utils.bt_loss import bt_loss
+from utils.swav import sinkhorn
 
 best_acc = 0
 
@@ -103,11 +104,12 @@ def main():
                         help='use nesterov momentum')
     parser.add_argument('--use-ema', action='store_true', default=False,
                         help='use EMA model')
-    # BT params
+    parser.add_argument('--semisl-met', default='fixm', type=str,
+                        choices=['fixm', 'bt', 'swav'], help='Semi-sl method')
     parser.add_argument('--use-bt', action='store_true', default=False,
                         help='use BarlowTwins loss')
-    parser.add_argument('--bt-mode', default='unl', type=str,
-                        choices=['all', 'unl'], help='BT opration mode')
+    parser.add_argument('--supcon-mode', default='all', type=str,
+                        choices=['all', 'unl'], help='Supcon losses operation mode')
     parser.add_argument('--loss-balancing', action='store_true', default=False,
                         help='auto balance supervised and semi-sup losses')
     parser.add_argument('--ema-decay', default=0.996, type=float,
@@ -138,6 +140,9 @@ def main():
 
     args = parser.parse_args()
 
+    args.use_bt = args.semisl_met == 'bt'
+    args.use_swav = args.semisl_met == 'swav'
+    args.use_supcon = args.use_bt or args.use_swav
     if args.local_rank in [0, -1]:
         log_name = 'train.log'
         log_name += time.strftime('-%Y-%m-%d-%H-%M-%S')
@@ -160,11 +165,14 @@ def main():
                                          num_classes=args.num_classes)
         elif args.arch == 'mobilenet':
             extra_dim = -1
-            if args.use_bt:
+            if args.use_supcon:
                 extra_dim = 1024
+                if args.use_swav: extra_dim = 128
             from multilabel.timm import TimmModelsWrapper
             model = TimmModelsWrapper('mobilenetv3_large_100_miil', pretrained=True,
                                          num_classes=args.num_classes, extra_head_dim=extra_dim)
+        if args.use_swav:
+            model.prototypes = torch.nn.Linear(extra_dim, 3000, bias=False)
         print("Total params: {:.2f}M".format(
             sum(p.numel() for p in model.parameters())/1e6))
         return model
@@ -341,6 +349,10 @@ def main():
 
 def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
           model, optimizer, ema_model, scheduler, multilabel=False):
+
+    if args.use_swav:
+        queue = torch.zeros(2, 1920, 128,).cuda()
+
     if args.loss_balancing:
         loss_balancer = LossBalancer(2)
     else:
@@ -435,6 +447,50 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                             else:
                                 vecs1, vecs2 = extra_features[batch_size:].chunk(2)
                                 Lu = bt_loss(vecs1, vecs2)
+                            mask = torch.Tensor([0.]).to(args.device)
+                            pseudo_l_acc = 0.
+                        elif args.use_swav:
+                            with torch.no_grad():
+                                w = model.prototypes.weight.data.clone()
+                                w = torch.nn.functional.normalize(w, dim=1, p=2)
+                                model.prototypes.weight.copy_(w)
+
+                            extra_features = de_interleave(output[1], batch_mult)
+                            extra_features = torch.nn.functional.normalize(extra_features, dim=1, p=2)
+                            similarities = model.prototypes(extra_features)
+
+                            sim_u = similarities[2 * batch_size:].chunk(2)
+                            sim_s = similarities[ : 2 * batch_size].chunk(2)
+                            uvecs = extra_features[2 * batch_size:].chunk(2)
+                            svecs = extra_features[ : 2 * batch_size].chunk(2)
+                            Lu = 0.
+                            for i in range(2):
+                                all_vecs = torch.cat([uvecs[i], svecs[i]], dim=0).detach()
+                                all_sims = torch.cat([sim_u[i], sim_s[i]], dim=0).detach()
+                                bs = all_vecs.shape[0]
+
+                                with torch.no_grad():
+                                    # time to use the queue
+                                    if queue is not None:
+                                        if use_the_queue or not torch.all(queue[i, -1, :] == 0):
+                                            use_the_queue = True
+                                            all_sims = torch.cat((torch.mm(
+                                                queue[i],
+                                                model.prototypes.weight.t()
+                                            ), all_sims))
+                                        # fill the queue
+                                        queue[i, bs:] = queue[i, :-bs].clone()
+                                        queue[i, :bs] = all_vecs
+
+                                    # get assignments
+                                    q = sinkhorn(all_sims)[-bs:]
+
+                                # cluster assignment prediction
+                                subloss = 0
+                                other_sims = torch.cat([sim_u[i-1], sim_s[i-1]], dim=0) / args.temperature # 0.1 by default
+                                subloss -= torch.mean(torch.sum(q * F.log_softmax(other_sims, dim=1), dim=1))
+                                Lu += subloss / (np.sum(args.nmb_crops) - 1)
+
                             mask = torch.Tensor([0.]).to(args.device)
                             pseudo_l_acc = 0.
                         else:

@@ -155,12 +155,12 @@ def get_multilabel_dataset(args, root, name='mlc_voc', resolution=224):
     base_dataset = MultiLabelClassification(osp.join(root, f'{name}/train.json'), transform=transform_labeled)
     print(f'Num train images: {len(base_dataset.data)}')
     train_labeled_dataset, train_unlabeled_dataset = split_small_subset(base_dataset, args.frac_labeled)
-    if args.use_bt:
+    if args.use_supcon:
         train_unlabeled_dataset.transform = TransformBarlowTrwinsTwoCrop(mean=normal_mean, std=normal_std, resolution=resolution)
     else:
         train_unlabeled_dataset.transform = TransformFixMatchMultilabel(mean=normal_mean, std=normal_std, resolution=resolution)
 
-    if args.use_bt and args.bt_mode == 'all':
+    if args.use_supcon and args.supcon_mode == 'all':
         train_labeled_dataset.transform = TransformBarlowTrwinsTwoCrop(mean=normal_mean, std=normal_std, resolution=resolution)
 
     test_dataset = MultiLabelClassification(osp.join(root, f'{name}/val.json'), transform=transform_val)
