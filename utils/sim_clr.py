@@ -1,8 +1,10 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+import numpy as np
 
 from .bt_loss import off_diagonal
+
 
 class InfoNCELoss(nn.Module):
     def __init__(self, use_gpu=True, s=30, end_s=None, duration_s=None, skip_steps_s=None):

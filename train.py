@@ -450,6 +450,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                             mask = torch.Tensor([0.]).to(args.device)
                             pseudo_l_acc = 0.
                         elif args.use_swav:
+                            use_the_queue = epoch > 0.1 * (args.epochs - args.start_epoch)
                             with torch.no_grad():
                                 w = model.prototypes.weight.data.clone()
                                 w = torch.nn.functional.normalize(w, dim=1, p=2)
@@ -487,9 +488,9 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
                                 # cluster assignment prediction
                                 subloss = 0
-                                other_sims = torch.cat([sim_u[i-1], sim_s[i-1]], dim=0) / args.temperature # 0.1 by default
+                                other_sims = torch.cat([sim_u[i-1], sim_s[i-1]], dim=0) / args.T # 0.1 by default
                                 subloss -= torch.mean(torch.sum(q * F.log_softmax(other_sims, dim=1), dim=1))
-                                Lu += subloss / (np.sum(args.nmb_crops) - 1)
+                                Lu += subloss / 2
 
                             mask = torch.Tensor([0.]).to(args.device)
                             pseudo_l_acc = 0.
