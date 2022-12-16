@@ -25,6 +25,7 @@ from utils import AverageMeter, accuracy, Logger
 from utils.loss_balancer import LossBalancer
 from utils.bt_loss import bt_loss
 from utils.swav import sinkhorn
+from utils.sim_clr import InfoNCELoss
 
 best_acc = 0
 
@@ -105,9 +106,7 @@ def main():
     parser.add_argument('--use-ema', action='store_true', default=False,
                         help='use EMA model')
     parser.add_argument('--semisl-met', default='fixm', type=str,
-                        choices=['fixm', 'bt', 'swav'], help='Semi-sl method')
-    parser.add_argument('--use-bt', action='store_true', default=False,
-                        help='use BarlowTwins loss')
+                        choices=['fixm', 'bt', 'swav', 'simclr'], help='Semi-sl method')
     parser.add_argument('--supcon-mode', default='all', type=str,
                         choices=['all', 'unl'], help='Supcon losses operation mode')
     parser.add_argument('--loss-balancing', action='store_true', default=False,
@@ -142,7 +141,8 @@ def main():
 
     args.use_bt = args.semisl_met == 'bt'
     args.use_swav = args.semisl_met == 'swav'
-    args.use_supcon = args.use_bt or args.use_swav
+    args.use_simclr = args.semisl_met == 'simclr'
+    args.use_supcon = args.use_bt or args.use_swav or args.use_simclr
     if args.local_rank in [0, -1]:
         log_name = 'train.log'
         log_name += time.strftime('-%Y-%m-%d-%H-%M-%S')
@@ -413,7 +413,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             batch_size = targets_x.shape[0]
             if unlabeled_iter:
                 batch_mult = 2*args.mu + 1
-                if args.bt_mode == 'all':
+                if args.supcon_mode == 'all':
                     batch_mult += 1
                     to_concat = (*inputs_x, inputs_u_w, inputs_u_s)
                 else:
@@ -491,6 +491,14 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                                 subloss -= torch.mean(torch.sum(q * F.log_softmax(other_sims, dim=1), dim=1))
                                 Lu += subloss / (np.sum(args.nmb_crops) - 1)
 
+                            mask = torch.Tensor([0.]).to(args.device)
+                            pseudo_l_acc = 0.
+                        elif args.use_simclr:
+                            extra_features = de_interleave(output[1], batch_mult)
+                            vecs1, vecs2 = extra_features[2 * batch_size:].chunk(2)
+                            svecs1, svecs2 = extra_features[ : 2 * batch_size].chunk(2)
+                            loss = InfoNCELoss()
+                            Lu = loss(torch.cat([vecs1, svecs1], dim=0), torch.cat([vecs2, svecs2], dim=0))
                             mask = torch.Tensor([0.]).to(args.device)
                             pseudo_l_acc = 0.
                         else:

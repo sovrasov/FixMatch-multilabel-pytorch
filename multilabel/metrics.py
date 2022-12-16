@@ -1,14 +1,5 @@
-from collections import defaultdict
-
 import numpy as np
 import torch
-from sklearn.metrics import confusion_matrix
-from terminaltables import AsciiTable
-
-from torchreid.utils import get_model_attr
-from sklearn.metrics import precision_recall_curve
-
-__FEATURE_DUMP_MODES = ['none', 'all', 'vecs']
 
 
 @torch.no_grad()
