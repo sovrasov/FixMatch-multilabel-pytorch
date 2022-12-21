@@ -67,8 +67,9 @@ def get_labels_freq(data, num_classes):
     return freqs, counters
 
 
-def split_small_subset(base_dataset, min_num_images=10):
+def split_small_subset(base_dataset, min_num_images=10, classes_sample=-1):
     min_num_images = int(min_num_images)
+    classes_sample = base_dataset.num_classes if classes_sample < 1 else classes_sample
 
     def get_class_records(all_records, class_idx):
         class_records_idx = []
@@ -90,7 +91,7 @@ def split_small_subset(base_dataset, min_num_images=10):
     random.seed(6)
     sampled_records = []
 
-    for i in range(base_dataset.num_classes):
+    for i in range(classes_sample):
         class_records_idxs = get_class_records(data_records, i)
         if i > 0:
             num_sampled = get_num_class_samples(sampled_records, i)
@@ -106,7 +107,7 @@ def split_small_subset(base_dataset, min_num_images=10):
             for j in range(min([len(class_records_idxs), min_num_images])):
                 sampled_records.append(data_records[class_records_idxs[j]])
 
-    class_counters = {i : get_num_class_samples(sampled_records, i) for i in range(base_dataset.num_classes)}
+    class_counters = {i : get_num_class_samples(sampled_records, i) for i in range(classes_sample)}
     print(class_counters)
     sup_dataset = deepcopy(base_dataset)
     sup_dataset.data = sampled_records
@@ -152,9 +153,10 @@ def get_multilabel_dataset(args, root, name='mlc_voc', resolution=224):
         transforms.ToTensor(),
         transforms.Normalize(mean=normal_mean, std=normal_std)
     ])
-    base_dataset = MultiLabelClassification(osp.join(root, f'{name}/train.json'), transform=transform_labeled)
+    base_dataset = MultiLabelClassification(osp.join(root, f'{name}/train.json'),
+                                            transform=transform_labeled, max_classes=args.max_num_classes)
     print(f'Num train images: {len(base_dataset.data)}')
-    train_labeled_dataset, train_unlabeled_dataset = split_small_subset(base_dataset, args.frac_labeled)
+    train_labeled_dataset, train_unlabeled_dataset = split_small_subset(base_dataset, args.frac_labeled, classes_sample=args.max_num_classes)
     if args.use_supcon:
         train_unlabeled_dataset.transform = TransformBarlowTrwinsTwoCrop(mean=normal_mean, std=normal_std, resolution=resolution)
     else:
@@ -163,7 +165,8 @@ def get_multilabel_dataset(args, root, name='mlc_voc', resolution=224):
     if args.use_supcon and args.supcon_mode == 'all':
         train_labeled_dataset.transform = TransformBarlowTrwinsTwoCrop(mean=normal_mean, std=normal_std, resolution=resolution)
 
-    test_dataset = MultiLabelClassification(osp.join(root, f'{name}/val.json'), transform=transform_val)
+    test_dataset = MultiLabelClassification(osp.join(root, f'{name}/val.json'),
+                                            transform=transform_val, max_classes=args.max_num_classes)
 
     return train_labeled_dataset, train_unlabeled_dataset, test_dataset
 
@@ -172,7 +175,7 @@ class MultiLabelClassification:
     """Multi label classification dataset.
     """
 
-    def __init__(self, root='', transform=None, **kwargs):
+    def __init__(self, root='', transform=None, max_classes=-1, **kwargs):
         self.root = osp.abspath(osp.expanduser(root))
         self.data_dir = osp.dirname(self.root)
         self.transform = transform
@@ -182,6 +185,7 @@ class MultiLabelClassification:
             self.data_dir,
         )
         self.num_classes = len(classes)
+        self.max_classes = max_classes if max_classes > 1 else self.num_classes
         self.data = data
 
     def __len__(self):
@@ -189,9 +193,10 @@ class MultiLabelClassification:
 
     def __getitem__(self, index):
         img_path, target = self.data[index]
-        targets = torch.zeros(self.num_classes)
+        targets = torch.zeros(self.max_classes)
         for obj in target:
-            targets[obj] = 1
+            if obj < self.max_classes:
+                targets[obj] = 1
 
         img = cv.cvtColor(cv.imread(img_path, cv.IMREAD_COLOR), cv.COLOR_BGR2RGB)
         img = Image.fromarray(img)

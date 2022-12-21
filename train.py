@@ -82,6 +82,8 @@ def main():
                         help='dataset name')
     parser.add_argument('--frac-labeled', type=float, default=0.5,
                         help='number of labeled data')
+    parser.add_argument('--max-num-classes', type=int, default=20,
+                        help='number of classes in sampled subset')
     parser.add_argument("--expand-labels", action="store_true",
                         help="expand labels to fit eval steps")
     parser.add_argument('--arch', default='wideresnet', type=str,
@@ -170,7 +172,7 @@ def main():
                 if args.use_swav: extra_dim = 128
             from multilabel.timm import TimmModelsWrapper
             model = TimmModelsWrapper('mobilenetv3_large_100_miil', pretrained=True,
-                                         num_classes=args.num_classes, extra_head_dim=extra_dim)
+                                         num_classes=args.max_num_classes, extra_head_dim=extra_dim)
         if args.use_swav:
             model.prototypes = torch.nn.Linear(extra_dim, 3000, bias=False)
         print("Total params: {:.2f}M".format(
@@ -440,7 +442,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                     if unlabeled_iter:
                         if args.use_bt:
                             extra_features = de_interleave(output[1], batch_mult)
-                            if args.bt_mode == 'all':
+                            if args.supcon_mode == 'all':
                                 vecs1, vecs2 = extra_features[2 * batch_size:].chunk(2)
                                 svecs1, svecs2 = extra_features[ : 2 * batch_size].chunk(2)
                                 Lu = bt_loss(torch.cat([vecs1, svecs1], dim=0), torch.cat([vecs2, svecs2], dim=0))
