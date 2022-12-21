@@ -145,6 +145,8 @@ def main():
     args.use_swav = args.semisl_met == 'swav'
     args.use_simclr = args.semisl_met == 'simclr'
     args.use_supcon = args.use_bt or args.use_swav or args.use_simclr
+    if not args.use_supcon:
+        args.supcon_mode = 'unl'
     if args.local_rank in [0, -1]:
         log_name = 'train.log'
         log_name += time.strftime('-%Y-%m-%d-%H-%M-%S')
