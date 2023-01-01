@@ -67,6 +67,15 @@ def get_labels_freq(data, num_classes):
     return freqs, counters
 
 
+def filter_unrelated_classes(records, num_classes):
+    filtered_records = []
+    for r in records:
+        for j in r[1]:
+            if j < num_classes:
+                filtered_records.append(r)
+    return filtered_records
+
+
 def split_small_subset(base_dataset, min_num_images=10, classes_sample=-1):
     min_num_images = int(min_num_images)
     classes_sample = base_dataset.num_classes if classes_sample < 1 else classes_sample
@@ -88,6 +97,9 @@ def split_small_subset(base_dataset, min_num_images=10, classes_sample=-1):
         return num_samples
 
     data_records = base_dataset.data
+    if base_dataset.num_classes != classes_sample:
+        data_records = filter_unrelated_classes(data_records, classes_sample)
+
     random.seed(6)
     sampled_records = []
 
@@ -167,6 +179,8 @@ def get_multilabel_dataset(args, root, name='mlc_voc', resolution=224):
 
     test_dataset = MultiLabelClassification(osp.join(root, f'{name}/val.json'),
                                             transform=transform_val, max_classes=args.max_num_classes)
+    if test_dataset.num_classes != args.max_num_classes:
+        test_dataset.data = filter_unrelated_classes(test_dataset.data, args.max_num_classes)
 
     return train_labeled_dataset, train_unlabeled_dataset, test_dataset
 
