@@ -187,4 +187,6 @@ DATASET_GETTERS = {'cifar10': get_cifar10,
                    'cifar100': get_cifar100,
                    'mlc_voc': partial(get_multilabel_dataset, name='mlc_voc'),
                    'ms_coco': partial(get_multilabel_dataset, name='ms_coco'),
+                   'nus_wide': partial(get_multilabel_dataset, name='mlc_nus_wide'),
+                   'maritime': partial(get_multilabel_dataset, name='mlc_aerial_maritime'),
                    }
