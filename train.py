@@ -78,7 +78,7 @@ def main():
     parser.add_argument('--num-workers', type=int, default=4,
                         help='number of workers')
     parser.add_argument('--dataset', default='cifar10', type=str,
-                        choices=['cifar10', 'cifar100', 'mlc_voc', 'ms_coco', 'nus_wide'],
+                        choices=['cifar10', 'cifar100', 'mlc_voc', 'ms_coco', 'nus_wide', 'maritime'],
                         help='dataset name')
     parser.add_argument('--frac-labeled', type=float, default=0.5,
                         help='number of labeled data')
@@ -253,6 +253,9 @@ def main():
     elif args.dataset == 'nus_wide':
         multilabel = True
         args.num_classes = 81
+    elif args.dataset == 'maritime':
+        multilabel = True
+        args.num_classes = 5
 
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()
