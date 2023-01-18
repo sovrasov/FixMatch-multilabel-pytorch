@@ -22,7 +22,7 @@ from multilabel.loss import AsymmetricLoss
 from multilabel.metrics import mAP, accuracy_multilabel
 from multilabel.unsup_loss_scheduler import CosineIncreaseScheduler
 from utils import AverageMeter, accuracy, Logger
-from utils.loss_balancer import LossBalancer
+from utils.loss_balancer import MeanLossBalancer, EqualLossBalancer
 from utils.bt_loss import bt_loss
 from utils.swav import sinkhorn
 from utils.sim_clr import InfoNCELoss
@@ -364,7 +364,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
         queue = torch.zeros(2, 1920, 128,).cuda()
 
     if args.loss_balancing:
-        loss_balancer = LossBalancer(2)
+        loss_balancer = MeanLossBalancer(2, [1, args.lambda_u], mode='avg')
     else:
         loss_balancer = None
 
@@ -538,6 +538,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
                 if not args.loss_balancing:
                     loss = Lx + lambda_scheduler.get_multiplier() * args.lambda_u * Lu
+                    #loss = Lx + args.lambda_u * Lu
                 else:
                     loss = loss_balancer.balance_losses([Lx, Lu])
 
