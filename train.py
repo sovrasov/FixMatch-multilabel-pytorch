@@ -364,7 +364,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
         queue = torch.zeros(2, 1920, 128,).cuda()
 
     if args.loss_balancing:
-        loss_balancer = MeanLossBalancer(2, [1, args.lambda_u], mode='avg')
+        loss_balancer = MeanLossBalancer(2, [1, args.lambda_u], mode='ema', ema_weight=0.7)
     else:
         loss_balancer = None
 
@@ -524,8 +524,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                             mask = mask_pos.float()
                     else:
                         pseudo_l_acc = 0.
-                        Lu = torch.Tensor([0.]).to(args.device)
-                        mask = torch.Tensor([0.]).to(args.device)
+                        Lu = 0.
+                        mask = torch.zeros((1,)).to(args.device)
 
                 else:
                     Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
@@ -549,7 +549,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
                 losses.update(loss.item())
                 losses_x.update(Lx.item())
-                losses_u.update(Lu.item())
+                losses_u.update(float(Lu))
                 if args.amp:
                     scaler.step(optimizer)
                     scaler.update()
