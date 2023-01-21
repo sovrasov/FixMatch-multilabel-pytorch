@@ -360,6 +360,8 @@ def main():
 def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
           model, optimizer, ema_model, scheduler, multilabel=False):
 
+    max_accuracy = 0.
+    best_epoch = 0
     if args.use_swav:
         queue = torch.zeros(2, 1920, 128,).cuda()
 
@@ -594,6 +596,9 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
         if args.local_rank in [-1, 0]:
             test_loss, test_acc = test(args, test_loader, test_model, epoch, multilabel)
+            max_accuracy = max(test_acc, max_accuracy)
+            if max_accuracy == test_acc:
+                best_epoch = epoch + 1
 
             args.writer.add_scalar('train/1.train_loss', losses.avg, epoch)
             args.writer.add_scalar('train/2.train_loss_x', losses_x.avg, epoch)
@@ -627,6 +632,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
     if args.local_rank in [-1, 0]:
         args.writer.close()
+        print(f'Max accuracy: {round(max_accuracy,2)} reached at epoch: {best_epoch}' )
 
 
 def test(args, test_loader, model, epoch, multilabel=False):
@@ -687,6 +693,7 @@ def test(args, test_loader, model, epoch, multilabel=False):
         mAP_score, mean_p_c, mean_r_c, mean_f_c, p_o, r_o, f_o = mAP(gt_labels, out_scores, pos_thr=0.5)
         mAP_score *= 100
         print("mlc map: {:.2f}".format(mAP_score))
+        return losses.avg, mAP_score
     else:
         print("top-1 acc: {:.2f}".format(top1.avg))
         print("top-5 acc: {:.2f}".format(top5.avg))
