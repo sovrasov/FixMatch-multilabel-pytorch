@@ -119,6 +119,8 @@ def main():
                         help='coefficient of unlabeled batch size')
     parser.add_argument('--lambda-u', default=1, type=float,
                         help='coefficient of unlabeled loss')
+    parser.add_argument('--ema-loss', default=0.7, type=float,
+                        help='coefficient of ema loss averaging')
     parser.add_argument('--T', default=1, type=float,
                         help='pseudo label temperature')
     parser.add_argument('--threshold', default=0.95, type=float,
@@ -366,7 +368,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
         queue = torch.zeros(2, 1920, 128,).cuda()
 
     if args.loss_balancing:
-        loss_balancer = MeanLossBalancer(2, [1, args.lambda_u], mode='ema', ema_weight=0.7)
+        loss_balancer = MeanLossBalancer(2, [1, args.lambda_u], mode='ema',
+                                         ema_weight=args.ema_loss)
     else:
         loss_balancer = None
 
