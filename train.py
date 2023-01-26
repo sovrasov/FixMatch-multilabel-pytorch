@@ -111,6 +111,8 @@ def main():
                         choices=['fixm', 'bt', 'swav', 'simclr'], help='Semi-sl method')
     parser.add_argument('--supcon-mode', default='all', type=str,
                         choices=['all', 'unl'], help='Supcon losses operation mode')
+    parser.add_argument('--adaptive-thresholds', action='store_true', default=False,
+                        help='auto set thresholds for FixMatch')
     parser.add_argument('--loss-balancing', action='store_true', default=False,
                         help='auto balance supervised and semi-sup losses')
     parser.add_argument('--ema-decay', default=0.996, type=float,
@@ -366,6 +368,9 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
     best_epoch = 0
     if args.use_swav:
         queue = torch.zeros(2, 1920, 128,).cuda()
+    alpha = 0.2
+    neg_threshs = torch.ones(args.max_num_classes).cuda() * alpha
+    pos_threshs = torch.ones(args.max_num_classes).cuda() * (1 - alpha)
 
     if args.loss_balancing:
         loss_balancer = MeanLossBalancer(2, [1, args.lambda_u], mode='ema',
@@ -406,23 +411,23 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                          disable=args.local_rank not in [-1, 0])
         for batch_idx in range(args.eval_step):
             try:
-                inputs_x, targets_x = labeled_iter.next()
+                inputs_x, targets_x = next(labeled_iter)
             except:
                 if args.world_size > 1:
                     labeled_epoch += 1
                     labeled_trainloader.sampler.set_epoch(labeled_epoch)
                 labeled_iter = iter(labeled_trainloader)
-                inputs_x, targets_x = labeled_iter.next()
+                inputs_x, targets_x = next(labeled_iter)
 
             if unlabeled_iter:
                 try:
-                    (inputs_u_w, inputs_u_s), targets_u = unlabeled_iter.next()
+                    (inputs_u_w, inputs_u_s), targets_u = next(unlabeled_iter)
                 except:
                     if args.world_size > 1:
                         unlabeled_epoch += 1
                         unlabeled_trainloader.sampler.set_epoch(unlabeled_epoch)
                     unlabeled_iter = iter(unlabeled_trainloader)
-                    (inputs_u_w, inputs_u_s), targets_u = unlabeled_iter.next()
+                    (inputs_u_w, inputs_u_s), targets_u = next(unlabeled_iter)
 
             data_time.update(time.time() - end)
             batch_size = targets_x.shape[0]
@@ -518,14 +523,30 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                             mask = torch.Tensor([0.]).to(args.device)
                             pseudo_l_acc = 0.
                         else:
-                            pseudo_label = torch.sigmoid(logits_u_w.detach() / args.T)
-                            mask_pos = pseudo_label >= args.threshold
-                            mask_neg = pseudo_label <= abs(1. - args.threshold)
-                            pseudo_targets = -1. * torch.ones_like(mask_pos).to(pseudo_label.device)
-                            pseudo_targets[mask_pos] = 1
-                            pseudo_targets[mask_neg] = 0
-                            pseudo_l_acc = torch.sum(targets_u.to(args.device).int() == pseudo_targets.int()).item() / pseudo_targets.shape[0] / pseudo_targets.shape[1]
-                            Lu = bce_loss(logits_u_s, pseudo_targets) / args.mu # we need to normalize that loss
+                            sup_probs = torch.sigmoid(logits_x.detach())
+
+                            if args.adaptive_thresholds:
+                                pos_conf = sup_probs[targets_x.type('torch.BoolTensor')]
+                                neg_conf = sup_probs[~targets_x.type('torch.BoolTensor')]
+                                pos_class_idxs = torch.argwhere(targets_x >=1)
+                                neg_class_idxs = torch.argwhere(targets_x <= 0)
+
+                                for i in range(args.max_num_classes):
+                                    pos_threshs[i] = max(alpha, (1 - alpha) * pos_threshs[i] + alpha * pos_conf[pos_class_idxs[pos_class_idxs == i]].mean())
+                                    neg_threshs[i] = min(alpha, (1 - alpha) * neg_threshs[i] + alpha * neg_conf[neg_class_idxs[neg_class_idxs == i]].mean())
+                            else:
+                                pos_threshs = args.threshold
+                                neg_threshs = abs(1. - args.threshold)
+
+                            with torch.no_grad():
+                                pseudo_label = torch.sigmoid(logits_u_w.detach() / args.T)
+                                mask_pos = pseudo_label >= pos_threshs
+                                mask_neg = pseudo_label <= neg_threshs
+                                pseudo_targets = -1 * torch.ones_like(mask_pos, dtype=torch.int8).to(pseudo_label.device)
+                                pseudo_targets[mask_pos] = 1
+                                pseudo_targets[mask_neg] = 0
+                                pseudo_l_acc = torch.sum(targets_u.to(args.device).int() == pseudo_targets).item() / pseudo_targets.shape[0] / pseudo_targets.shape[1]
+                            Lu = bce_loss(logits_u_s, pseudo_targets) / args.mu # we need to normalize this loss
                             mask = mask_pos.float()
                     else:
                         pseudo_l_acc = 0.
